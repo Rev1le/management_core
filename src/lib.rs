@@ -1,7 +1,12 @@
-use std::{fs, io::{self, Read}, collections::{HashSet, HashMap}, hash::{Hash, Hasher}, rc::{Rc, Weak}};
+use std::{fs, io::{self, Read}, collections::{HashSet, HashMap}, hash::{Hash, Hasher}, rc::{Rc, Weak as RcWeak}};
+use std::cell::RefCell;
+use std::fs::File;
 use std::io::Error;
+use std::path::Path;
+use std::sync::{Arc, OnceLock, Weak as ArcWeak};
 
 use serde_json::{Value, from_reader};
+
 
 #[derive(Debug)]
 pub enum SchemaError {
@@ -50,15 +55,14 @@ impl From<io::Error> for SchemaError {
 //     }
 // }
 
-
 // Связать vacancies и skills обычной ссылкой с верменем жизни, а не RC
 #[derive(Debug, Clone)]
-pub struct CoefficientScheme {
-    vacancies: HashSet<Rc<Vacancy>>,
-    skills: HashSet<Skill>,
+pub struct CoefficientScheme<'a> {
+    vacancies: HashSet<Arc<Vacancy>>,
+    skills: HashSet<Skill<'a>>,
 }
 
-impl CoefficientScheme {
+impl<'a> CoefficientScheme<'a> {
     pub fn new(mut schema_f: fs::File) -> Result<Self, SchemaError> {
 
         let mut schema_bytes = vec![];
@@ -67,23 +71,28 @@ impl CoefficientScheme {
         let json: Value = serde_json::from_slice(&schema_bytes).unwrap();
         //println!("{:?}", json);
 
-        let vacancies = HashSet::from_iter(
-            json["vacancies"]
-                .as_array()
-                .expect("json конфиг не содержит массива в поле 'vacancies'")
-                .iter()
-                .map(
-                    |vacancy| {
-                        let vacancy_name_str = vacancy.as_str().unwrap().to_owned();
-                        return Rc::new(Vacancy(vacancy_name_str));
-                    }
-                )
-        );
+        let iter = json["vacancies"]
+            .as_array()
+            .expect("json конфиг не содержит массива в поле 'vacancies'")
+            .iter()
+            .map(
+                |vacancy| {
+                    let vacancy_name_str = vacancy.as_str().unwrap().to_owned();
+                    return Arc::new(Vacancy(vacancy_name_str));
+                }
+            );
 
-        let mut res_skills = HashSet::default();
+        let vacancies: HashSet<Rc<Vacancy>> = HashSet::from_iter(iter);
+
+        let mut res_skills: HashSet<Skill> = HashSet::default();
         let skills = json["skills"]
             .as_object()
             .expect("json конфиг не содержит объекта в поле 'skills'");
+
+        let mut schema = Self {
+            vacancies,
+            skills: HashSet::default(),
+        };
 
         for (skill_name, vacancies_coef) in skills {
 
@@ -95,7 +104,7 @@ impl CoefficientScheme {
                 println!("{:?}", vacancy_coef);
                 let vacancy: Vacancy = vacancy_name.clone().into();
 
-                let vacancy_rc = vacancies
+                let vacancy_rc = schema.vacancies
                     .get::<Vacancy>(&vacancy)
                     .ok_or(
                         SchemaError::Custom {
@@ -107,26 +116,31 @@ impl CoefficientScheme {
                 //println!("{:?}", vacancy_rc);
                 //println!("{:?}", vacancy_coef);
 
-                vacancies_coefficient.push(VacancyCoefficient(Rc::downgrade(vacancy_rc), vacancy_coef.as_i64().unwrap()));
+                vacancies_coefficient.push(VacancyCoefficient(&*vacancy_rc, vacancy_coef.as_i64().unwrap()));
+                //vacancies_coefficient.push(VacancyCoefficient(Rc::downgrade(vacancy_rc), vacancy_coef.as_i64().unwrap()));
             }
 
-            res_skills.insert( Skill {
+            schema.skills.insert( Skill {
                 name: skill_name.clone(),
                 vacancies_coefficient
             });
         }
 
-        Ok(Self {
-            vacancies,
-            skills: res_skills,
-        })
+        Ok(schema)
+    }
+
+    pub fn get_vacancies(&self) -> &HashSet<Rc<Vacancy>> {
+        &self.vacancies
+    }
+
+    pub fn get_skills(&self) -> &HashSet<Skill> {
+        &self.skills
     }
 }
 
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Vacancy(pub String);
-
 
 impl Hash for Vacancy {
     fn hash<H: Hasher>(&self, state: &mut H) {
@@ -140,37 +154,31 @@ impl From<String> for Vacancy {
     }
 }
 
-
 #[derive(Debug, Clone)]
-pub struct Skill {
+pub struct Skill<'a> {
     name: String,
-    vacancies_coefficient: Vec<VacancyCoefficient>
+    vacancies_coefficient: Vec<VacancyCoefficient<'a>>
 }
 
-
-impl Hash for Skill {
+impl<'a> Hash for Skill<'a> {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state)
     }
 }
 
-
-impl PartialEq for Skill {
+impl PartialEq for Skill<'_> {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
 }
 
-
-impl Eq for Skill {}
-
+impl Eq for Skill<'_> {}
 
 #[derive(Debug, Clone)]
-pub struct VacancyCoefficient(Weak<Vacancy>, i64);
+pub struct VacancyCoefficient<'a>(&'a Vacancy, i64);
 
-
-impl VacancyCoefficient {
-    pub fn new(vacancy: Weak<Vacancy>, coefficient: i64) -> Self {
+impl<'a> VacancyCoefficient<'a> {
+    pub fn new(vacancy: &'a Vacancy, coefficient: i64) -> Self {
         Self(vacancy, coefficient)
     }
 }
@@ -188,7 +196,7 @@ mod tests {
 
         let schema = CoefficientScheme::new(f).unwrap();
         println!("\n{:?}", schema);
-        println!("\n{:?}", schema.skills.iter().next().unwrap().vacancies_coefficient[0].0.upgrade());
+        //println!("\n{:?}", schema.skills.iter().next().unwrap().vacancies_coefficient[0].0.upgrade());
         assert_eq!(4, 4);
     }
 }
