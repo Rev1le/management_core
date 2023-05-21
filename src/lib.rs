@@ -1,9 +1,15 @@
-use std::{fs, io::{self, Read}, collections::{HashSet, HashMap}, hash::{Hash, Hasher}, rc::{Rc, Weak as RcWeak}};
+#![feature(ptr_internals)]
+
+use std::{fs, io::{self, Read}, collections::{HashSet, HashMap}, hash::{Hash, Hasher}, rc::{Rc, Weak as RcWeak}, mem};
 use std::cell::RefCell;
+use std::fmt::{Debug, Formatter};
 use std::fs::File;
 use std::io::Error;
 use std::path::Path;
+use std::ptr::Unique;
 use std::sync::{Arc, OnceLock, Weak as ArcWeak};
+use serde::{Serialize, Serializer};
+use serde::ser::SerializeStruct;
 
 use serde_json::{Value, from_reader};
 
@@ -23,46 +29,46 @@ impl From<io::Error> for SchemaError {
     }
 }
 
-// #[derive(Debug, Clone)]
-// pub struct Team(Vec<Worker>);
-//
-// impl Team {
-//     pub fn new() -> Self {
-//         Self(vec![])
-//     }
-//
-//     pub fn add_worker(&mut self, worker: Worker) {
-//         self.0.push(worker);
-//     }
-// }
-//
-// #[derive(Debug, Clone)]
-// pub struct Worker {
-//     name: String,
-//     skills: Vec<Skill>
-// }
-//
-// impl Worker {
-//     pub fn new(name: &str, skills: &[Skill]) -> Self {
-//         Self {
-//             name: name.into(),
-//             skills: skills.into()
-//         }
-//     }
-//
-//     pub fn get_suitable_vacancy(&self) -> Vacancy {
-//         todo!()
-//     }
-// }
+#[derive(Debug, Clone, Serialize)]
+pub struct Team(Vec<Worker>);
 
-// Связать vacancies и skills обычной ссылкой с верменем жизни, а не RC
-#[derive(Debug, Clone)]
-pub struct CoefficientScheme<'a> {
-    vacancies: HashSet<Arc<Vacancy>>,
-    skills: HashSet<Skill<'a>>,
+impl Team {
+    pub fn new() -> Self {
+        Self(vec![])
+    }
+
+    pub fn add_worker(&mut self, worker: Worker) {
+        self.0.push(worker);
+    }
 }
 
-impl<'a> CoefficientScheme<'a> {
+#[derive(Debug, Clone, Serialize)]
+pub struct Worker {
+    name: String,
+    skills: Vec<Skill>
+}
+
+impl Worker {
+    pub fn new(name: &str, skills: &[Skill]) -> Self {
+        Self {
+            name: name.into(),
+            skills: skills.into()
+        }
+    }
+
+    pub fn get_suitable_vacancy(&self) -> Vacancy {
+        todo!()
+    }
+}
+
+// Связать vacancies и skills обычной ссылкой с верменем жизни, а не RC
+#[derive(Debug, Clone, Serialize)]
+pub struct CoefficientScheme {
+    vacancies: HashSet<Vacancy>,
+    skills: HashSet<Skill>,
+}
+
+impl CoefficientScheme {
     pub fn new(mut schema_f: fs::File) -> Result<Self, SchemaError> {
 
         let mut schema_bytes = vec![];
@@ -78,11 +84,11 @@ impl<'a> CoefficientScheme<'a> {
             .map(
                 |vacancy| {
                     let vacancy_name_str = vacancy.as_str().unwrap().to_owned();
-                    return Arc::new(Vacancy(vacancy_name_str));
+                    return Vacancy(vacancy_name_str);
                 }
             );
 
-        let vacancies: HashSet<Rc<Vacancy>> = HashSet::from_iter(iter);
+        let vacancies: HashSet<Vacancy> = HashSet::from_iter(iter);
 
         let mut res_skills: HashSet<Skill> = HashSet::default();
         let skills = json["skills"]
@@ -116,7 +122,7 @@ impl<'a> CoefficientScheme<'a> {
                 //println!("{:?}", vacancy_rc);
                 //println!("{:?}", vacancy_coef);
 
-                vacancies_coefficient.push(VacancyCoefficient(&*vacancy_rc, vacancy_coef.as_i64().unwrap()));
+                vacancies_coefficient.push(VacancyCoefficient::new(&*vacancy_rc, vacancy_coef.as_i64().unwrap()));
                 //vacancies_coefficient.push(VacancyCoefficient(Rc::downgrade(vacancy_rc), vacancy_coef.as_i64().unwrap()));
             }
 
@@ -129,7 +135,15 @@ impl<'a> CoefficientScheme<'a> {
         Ok(schema)
     }
 
-    pub fn get_vacancies(&self) -> &HashSet<Rc<Vacancy>> {
+    // Not use pls
+    pub fn delete_all_vacancies(&mut self) {
+        self.vacancies.remove(&Vacancy("глава".into()));
+        self.vacancies.insert(Vacancy("Hackme aaaa".into()));
+
+        println!("{:?}", self.vacancies);
+    }
+
+    pub fn get_vacancies(&self) -> &HashSet<Vacancy> {
         &self.vacancies
     }
 
@@ -139,7 +153,7 @@ impl<'a> CoefficientScheme<'a> {
 }
 
 
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct Vacancy(pub String);
 
 impl Hash for Vacancy {
@@ -154,32 +168,61 @@ impl From<String> for Vacancy {
     }
 }
 
-#[derive(Debug, Clone)]
-pub struct Skill<'a> {
+#[derive(Debug, Clone, Serialize)]
+pub struct Skill {
     name: String,
-    vacancies_coefficient: Vec<VacancyCoefficient<'a>>
+    vacancies_coefficient: Vec<VacancyCoefficient>
 }
 
-impl<'a> Hash for Skill<'a> {
+impl Hash for Skill {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state)
     }
 }
 
-impl PartialEq for Skill<'_> {
+impl PartialEq for Skill {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
     }
 }
 
-impl Eq for Skill<'_> {}
+impl Eq for Skill {}
 
-#[derive(Debug, Clone)]
-pub struct VacancyCoefficient<'a>(&'a Vacancy, i64);
+#[derive(Clone)]
+pub struct VacancyCoefficient(Unique<Vacancy>, i64);
 
-impl<'a> VacancyCoefficient<'a> {
-    pub fn new(vacancy: &'a Vacancy, coefficient: i64) -> Self {
-        Self(vacancy, coefficient)
+impl VacancyCoefficient {
+    pub fn new(vacancy: &Vacancy, coefficient: i64) -> Self {
+
+        // Безопасность вышла покурить
+        let v = vacancy as *const Vacancy;
+        let vacancy_ptr = v as *mut Vacancy;
+
+        Self(Unique::new(vacancy_ptr).unwrap(), coefficient)
+    }
+}
+
+impl Debug for VacancyCoefficient {
+    fn fmt(&self, f: &mut Formatter<'_>) -> std::fmt::Result {
+
+        let vacancy_ref = unsafe {
+            self.0.as_ref()
+        };
+
+        write!(f, "VacancyCoefficient({:?}, {})", vacancy_ref, self.1)
+    }
+}
+
+impl Serialize for VacancyCoefficient {
+    fn serialize<S>(&self, serializer: S) -> Result<S::Ok, S::Error> where S: Serializer {
+        let vacancy = unsafe{
+            self.0.as_ref()
+        };
+
+        let mut s = serializer.serialize_struct("VacancyCoefficient", 2)?;
+        s.serialize_field("vacancy", &vacancy)?;
+        s.serialize_field("coefficient", &self.1)?;
+        s.end()
     }
 }
 
@@ -194,8 +237,8 @@ mod tests {
 
         let f = File::open("../skill_coefficients.json").unwrap();
 
-        let schema = CoefficientScheme::new(f).unwrap();
-        println!("\n{:?}", schema);
+        let mut schema = CoefficientScheme::new(f).unwrap();
+        println!("\n{:#?}", schema);
         //println!("\n{:?}", schema.skills.iter().next().unwrap().vacancies_coefficient[0].0.upgrade());
         assert_eq!(4, 4);
     }
