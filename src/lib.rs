@@ -1,7 +1,9 @@
 #![feature(ptr_internals)]
 
 use std::{fs, io::{self, Read}, collections::{HashSet, HashMap}, hash::{Hash, Hasher}, rc::{Rc, Weak as RcWeak}, mem};
+use std::borrow::Borrow;
 use std::cell::RefCell;
+use std::cmp::Ordering;
 use std::fmt::{Debug, Formatter};
 use std::fs::File;
 use std::io::Error;
@@ -174,6 +176,12 @@ pub struct Skill {
     vacancies_coefficient: Vec<VacancyCoefficient>
 }
 
+impl Skill {
+    pub fn get_vacancies_coefficient(&self) -> &Vec<VacancyCoefficient> {
+        &self.vacancies_coefficient
+    }
+}
+
 impl Hash for Skill {
     fn hash<H: Hasher>(&self, state: &mut H) {
         self.name.hash(state)
@@ -183,6 +191,12 @@ impl Hash for Skill {
 impl PartialEq for Skill {
     fn eq(&self, other: &Self) -> bool {
         self.name == other.name
+    }
+}
+
+impl Borrow<String> for Skill {
+    fn borrow(&self) -> &String {
+        &self.name
     }
 }
 
@@ -200,6 +214,22 @@ impl VacancyCoefficient {
 
         Self(Unique::new(vacancy_ptr).unwrap(), coefficient)
     }
+
+    pub fn get_vacancy_name(&self) -> &String {
+        let vacancy = unsafe {
+            self.0.as_ref()
+        };
+
+        &vacancy.0
+    }
+
+    pub fn get_coefficient(&self) -> i64 {
+        self.1
+    }
+
+    pub fn get_mut_coefficient(&mut self) -> &mut i64 {
+        &mut self.1
+    }
 }
 
 impl Debug for VacancyCoefficient {
@@ -210,6 +240,26 @@ impl Debug for VacancyCoefficient {
         };
 
         write!(f, "VacancyCoefficient({:?}, {})", vacancy_ref, self.1)
+    }
+}
+
+impl PartialEq<Self> for VacancyCoefficient {
+    fn eq(&self, other: &Self) -> bool {
+        self.1 == other.1
+    }
+}
+
+impl Eq for VacancyCoefficient {}
+
+impl PartialOrd for VacancyCoefficient {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
+impl Ord for VacancyCoefficient {
+    fn cmp(&self, other: &Self) -> Ordering {
+        self.1.cmp(&other.1)
     }
 }
 
